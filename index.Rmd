@@ -1,30 +1,128 @@
 ---
 title: "Practical Machine Learning Course Project"
 author: "Mark Jerome"
-date: "April 5, 2017"
-output: html_document
+date: "April 16, 2017"
+output:
+  html_document: default
+  word_document: default
 ---
 
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 ```
 
-## R Markdown
+This project uses the *Weight Lifting Exercises Dataset* found at http://groupware.les.inf.puc-rio.br/har to study predicting from data from accelerometers on the belt, forearm, arm, and dumbell whether a barbell lift has been performed correctly or incorrectly.  In particular, we will develop a model to predict which of five classes a given observation belongs to.  Class A indicates correct form, and classes B, C, D, and E indicate different incorrect forms.
 
-This is an R Markdown document. Markdown is a simple formatting syntax for authoring HTML, PDF, and MS Word documents. For more details on using R Markdown see <http://rmarkdown.rstudio.com>.
+##Overview
 
-When you click the **Knit** button a document will be generated that includes both content as well as the output of any embedded R code chunks within the document. You can embed an R code chunk like this:
+**How I built my model:** I built my model using the following steps:
 
-```{r cars}
-summary(cars)
+1. Remove line types from training data not found in testing data (new_window="yes").
+2. Remove columns which are all blank or all NA.
+3. Separate training data into 80% training subset and 20% testing subset.
+3. Train five models--one for each class--using one-versus-all logistic regression and 5-fold cross validation.
+4. Use the five models to predict a probability that each observation is in each class.
+5. For each observation, use the class with the highest probability as the final prediction.
+6. Determine expected accuracy from 20% holdout data.
+
+**How I used cross validation:** 5-fold cross validation was used in training each of the five models to help reduce overfitting of the logistic regression coefficients.
+
+**What I think the expected out-of-sample error is:** I expect the out-of-sample accuracy to be .9094, so the out-of-sample error would be .0906.
+
+**Why I made the choices I did:** My choices were made based on speed of processing, desired accuracy, and simplicity.
+
+#Data Preparation
+
+```{r echo=FALSE}
+options(warn=-1)
+```
+```{r echo=TRUE}
+set.seed(1234)
+library(caret)
+train01 <- read.csv("pml-training.csv")
+```
+The provided training dataset contains two types of observations: ones with *new_window* set to "yes" and ones with *new_window* set to "no".  Because there are no "yes" observations in the provided test dataset, we will not use them in training our model.
+
+```{r}
+train02 <- train01[train01$new_window=="no", ]
+```
+Once the "yes" observations are deleted, there are a number of columns that are either all blank or all NA.  We will not use these to train our model.
+
+```{r}
+rawLabels <- train02$classe
+keepColNames <- c("user_name","raw_timestamp_part_1","raw_timestamp_part_2","cvtd_timestamp","new_window","num_window","roll_belt","pitch_belt","yaw_belt","total_accel_belt","gyros_belt_x","gyros_belt_y","gyros_belt_z","accel_belt_x","accel_belt_y","accel_belt_z","magnet_belt_x","magnet_belt_y","magnet_belt_z","roll_arm","pitch_arm","yaw_arm","total_accel_arm","gyros_arm_x","gyros_arm_y","gyros_arm_z","accel_arm_x","accel_arm_y","accel_arm_z","magnet_arm_x","magnet_arm_y","magnet_arm_z","roll_dumbbell","pitch_dumbbell","yaw_dumbbell","total_accel_dumbbell","gyros_dumbbell_x","gyros_dumbbell_y","gyros_dumbbell_z","accel_dumbbell_x","accel_dumbbell_y","accel_dumbbell_z","magnet_dumbbell_x","magnet_dumbbell_y","magnet_dumbbell_z","roll_forearm","pitch_forearm","yaw_forearm","total_accel_forearm","gyros_forearm_x","gyros_forearm_y","gyros_forearm_z","accel_forearm_x","accel_forearm_y","accel_forearm_z","magnet_forearm_x","magnet_forearm_y","magnet_forearm_z")
+train03 <- train02[, keepColNames]
+```
+The provided training dataset will be divided into training and testing partitions.
+
+```{r}
+inMyTrain <- createDataPartition(rawLabels, p=.8, list=FALSE)
+myTest <- train03[-inMyTrain, ]
+testLabels <- rawLabels[-inMyTrain]
+myTrain <- train03[inMyTrain, ]
+trainLabels <- rawLabels[inMyTrain]
 ```
 
-## Including Plots
+##Preprocessing
 
-You can also embed plots, for example:
+We will center and scale the training data.
 
-```{r pressure, echo=FALSE}
-plot(pressure)
+```{r}
+ppObj <- preProcess(myTrain, method=c("center", "scale"))
+input <- predict(ppObj, newdata=myTrain)
+ppObj
 ```
 
-Note that the `echo = FALSE` parameter was added to the code chunk to prevent printing of the R code that generated the plot.
+##Training
+Define labels to be used in training each of five one-versus-all (ova) models.  There will be one set of labels with two levels for each class: "A" and "nonA", for example.
+```{r}
+classes <- c("A", "B", "C", "D", "E")
+ovaLabels <- data.frame(matrix(nrow=dim(input)[1], ncol=5))
+names(ovaLabels) <- classes
+for (label in classes){
+     ovaLabels[label] <- ifelse(trainLabels==label, label, paste("non", label, sep=""))
+}
+```
+Train five models, one for each class versus all the others.
+```{r}
+model <- list()
+cvControl <- trainControl(method="cv", number=5)
+for (label in classes){
+     tempDF <- data.frame(ovaLabels[label], input)
+     names(tempDF)[1] <- "y"
+     x <- train(y~., data=tempDF, method="glm", trControl=cvControl)
+     model <- c(model, list(x))
+}
+names(model) <- classes
+```
+Use the models to predict a probability that each observation belongs to each class.
+```{r}
+probabilities <- data.frame(matrix(nrow=dim(input)[1], ncol=5))
+names(probabilities) <- classes
+for (label in classes){
+     probabilities[label] <- predict(model[label], newdata=input, type="prob")[[1]][1]
+}
+```
+Choose the final prediction for each observation from the class with highest predicted probability.
+```{r}
+predictions <- apply(probabilities, 1, function(x){names(which.max(x))})
+```
+
+##Expected Accuracy
+
+Use the 20% holdout data to test model accuracy.
+```{r}
+input <- predict(ppObj, newdata=myTest)
+probabilities <- data.frame(matrix(nrow=dim(input)[1], ncol=5))
+names(probabilities) <- classes
+for (label in classes){
+  probabilities[label] <- predict(model[label], newdata=input, type="prob")[[1]][1]
+}
+predictions <- apply(probabilities, 1, function(x){names(which.max(x))})
+confusionMatrix(predictions, testLabels)
+```
+
+##Bibliography
+
+Velloso, E.; Bulling, A.; Gellersen, H.; Ugulino, W.; Fuks, H. **Qualitative Activity Recognition of Weight Lifting Exercises**. *Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13)*. Stuttgart, Germany: ACM SIGCHI, 2013.
+
